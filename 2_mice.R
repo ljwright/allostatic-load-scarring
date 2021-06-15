@@ -13,7 +13,8 @@ rm(list = ls())
 df_raw <- read_dta("Data/df_analysis.dta") %>%
   as_factor() %>%
   zap_formats() %>%
-  zap_label()
+  zap_label() %>%
+  mutate(across(matches("_Quartile"), as.factor))
 save(df_raw, file = "Data/df_raw.Rdata")
 
 biomarkers <- str_subset(names(df_raw), "_Quartile") %>%
@@ -43,7 +44,7 @@ map_mice <- function(df_mice){
                     ~ mice(df_mice, method = "rf",
                            predictorMatrix = pred,
                            maxit = 10, m = m_core,
-                           seed = .x))
+                           seed = .x, printFlag = FALSE))
   future:::ClusterRegistry("stop")
   return(imp)
 }
@@ -118,35 +119,55 @@ save(imp, make_long, obs_pidp,
      file = "Data/imp.Rdata")
 
 
-# 4. Individual Biomarkers ----
+# 4. Invidual Imputations ----
 load("Data/mice_args.Rdata")
-load("Data/df_bio.Rdata")
+load("Data/df_raw.Rdata")
 
-imp_bio <- list()
+all_vars <- str_subset(names(df_raw), "_Quartile") %>%
+  c(., str_replace(., "_Quartile", "")) %>%
+  c(., str_subset(names(df_raw), "Allostatic")) %>%
+  set_names(., .)
 
-tic()
-imp_bio$index <- df_bio %>%
-  select(-matches(glue("^({biomarkers})$"))) %>%
-  rename_with(~ str_replace(.x, "_Quartile", "")) %>%
-  mutate(across(matches(biomarkers), as.factor)) %>%
-  map_mice()
-toc()
+get_obs <- function(var){
+  df_raw %>%
+    filter(!is.na({{ var }})) %>%
+    pull(pidp)
+}
 
-tic()
-imp_bio$z <- df_bio %>%
-  select(-matches("_Quartile")) %>%
-  map_mice()
-toc()
+obs_pidp <- map(all_vars, ~ get_obs(Allostatic_Z)) %>%
+  c(., list(GHQ_Likert = get_obs(GHQ_Likert)))
 
-save(imp_bio, make_long, file = "Data/imp_bio.Rdata")
+make_long <- function(var){
+  imp_ind[[var]] %>%
+    complete("long", TRUE) %>%
+    as_tibble() %>%
+    rename(imp = .imp) %>%
+    select(-.id)
+}
 
-rbind(imp_bio$index)
+map_mice <- function(var){
+  df_mice <- df_raw %>%
+    rename(dep_var = all_of(!!var)) %>%
+    select(-any_of(!!all_vars))
+  
+  pred <- make.predictorMatrix(df_mice)
+  pred[, c("pidp", "PSU")] <- 0
+  
+  
+  imp <- mice(df_mice, method = "rf",
+              predictorMatrix = pred,
+              maxit = 10, m = 60,
+              seed = 1, printFlag = FALSE)
+  return(imp)
+}
 
-imp_bio$index %>%
-  map(rbind)
+plan(multisession, workers = 6)
+imp_ind <- sample(all_vars) %>%
+  future_map(map_mice, .progress = TRUE)
+future:::ClusterRegistry("stop")
 
-make_long(imp_bio$index) %>%
-  filter(pidp %in% obs_pidp[["Allostatic"]])
+save(imp_ind, make_long, obs_pidp, 
+     file = "Data/imp_ind.Rdata")
 
 # 5. Format Results ----
 load("Data/imp.Rdata")
@@ -170,17 +191,3 @@ imp_long %>%
             sd = wtd.var(Allostatic, Blood_Weight_X) %>% sd())
 
 save(imp_long, file = "Data/imp_long.Rdata")
-
-
-
-
-
-df %>%
-  filter(!is.na(Allostatic_Index)) %>%
-  pull(pidp) %>%
-  list()
-
-df %>%
-  filter(!is.na(GHQ_Likert)) %>%
-  pull(pidp) %>%
-  list()

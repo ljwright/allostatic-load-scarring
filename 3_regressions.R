@@ -2,9 +2,6 @@ library(tidyverse)
 library(magrittr)
 library(broom)
 library(glue)
-library(survey)
-library(margins)
-library(prediction)
 library(miceadds)
 library(Hmisc)
 library(tictoc)
@@ -15,16 +12,8 @@ library(fastglm)
 rm(list = ls())
 
 # 1. Load Data ----
-load("Data/df_analysis.Rdata")
-load("Data/imp_long.Rdata")
-
-df <- df %>%
-  rename(Age = Age_C) %>%
-  mutate(Age = Age + 25)
-
-imp_long <- imp_long %>%
-  rename(Age = Age_C) %>%
-  mutate(Age = Age + 25)
+load("Data/df_raw.Rdata")
+load("Data/imp_ind.Rdata")
 
 # Age Splines
 make_ns <- function(x, deg_free){
@@ -34,28 +23,32 @@ make_ns <- function(x, deg_free){
     mutate(across(everything(), as.numeric))
 }
 
-age_long <- tibble(Age = seq(min(df$Age), max(df$Age))) %>%
-  mutate(make_ns(Age, 3),
-         make_ns(Age, 2)) %>%
-  expand_grid(Unem_Age = unique(df$Unem_Age)) %>%
+age_long <- tibble(Age_C = seq(min(df_raw$Age_C), max(df_raw$Age_C))) %>%
+  mutate(make_ns(Age_C, 3),
+         make_ns(Age_C, 2)) %>%
+  expand_grid(Unem_Age = unique(df_raw$Unem_Age)) %>%
   drop_na() %>%
   mutate(a2_0 = as.numeric(Unem_Age) - 1,
          a2_1 = a2_0*a2_1,
          a2_2 = a2_0*a2_2) %>%
-  arrange(Age, Unem_Age) %>%
-  relocate(Unem_Age, .after = 1)
+  arrange(Age_C, Unem_Age) %>%
+  mutate(Age = Age_C + 25, .after = 1) %>%
+  relocate(Unem_Age, .after = 2)
 
 age_specs <- age_long %>%
+  select(-Age_C) %>%
   pivot_longer(-c(Age, Unem_Age), names_to = "term")
 
-imp_long <- imp_long %>%
-  left_join(age_long, by = c("Age", "Unem_Age")) %>%
-  mutate(`(Intercept)` = 1)
+join_splines <- function(df){
+  df %>%
+    left_join(age_long, by = c("Age_C", "Unem_Age")) %>%
+    select(-Age_C)
+}
 
 # 2. Model Arguments ----
 # Sex and Model Forms
 get_func <- function(outcome, mediate, unem_age, controls){
-  base_form <- glue("{outcome} ~ a3_1 + a3_2 + a3_3 + a2_0")
+  base_form <- glue("dep_var ~ a3_1 + a3_2 + a3_3 + a2_0")
   if (outcome == "GHQ_Likert" & mediate == TRUE){
     base_form <- glue("{base_form} + Allostatic")
   }
@@ -104,10 +97,8 @@ convert_factor <- function(var, name){
   set_names(var, name)
 }
 
-df_m <- imp_long %>%
-  filter(imputation == "z",
-         imp > 0) %>%
-  select(-imputation) 
+df_m <- make_long("Allostatic_Z") %>%
+  filter(imp > 0)
 
 v_means <- map(df_m, wtd_mean_or_mode,
                df_m$Blood_Weight_X) %>%
@@ -118,17 +109,26 @@ v_means <- map(df_m, wtd_mean_or_mode,
 rm(df_m)
 
 # Model Specificatons
-mod_specs <- expand_grid(imputation = unique(imp_long$imputation),
-                         sample = c("cc", "mi"),
-                         outcome = c("Allostatic", "GHQ_Likert"),
+biomarkers <- str_subset(names(df_raw), "_Quartile") %>%
+  c(., str_replace(., "_Quartile", ""))
+
+all_vars <- str_subset(names(df_raw), "Allostatic") %>%
+  c(biomarkers) %>%
+  set_names(., .)
+
+
+mod_specs <- expand_grid(outcome = c(all_vars, "GHQ_Likert"),
                          mediate = c(FALSE, TRUE),
                          unem_age = c(FALSE, TRUE),
                          mod = names(mod_forms),
-                         sex = names(sexes)) %>%
-  mutate(family = ifelse(outcome == "GHQ_Likert" | imputation == "z",
-                         "gaussian", "poisson")) %>%
-  mutate(id = row_number(), .before = 1) %>%
-  filter(outcome == "GHQ_Likert" | mediate == FALSE)
+                         sex = names(sexes),
+                         sample = c("cc", "mi")) %>%
+  mutate(family = case_when(str_detect(outcome, "Quartile") ~ "binomial",
+                            outcome == "Allostatic_Index" ~ "poisson",
+                            TRUE ~ "gaussian")) %>%
+  filter(outcome == "GHQ_Likert" | mediate == FALSE,
+         !(outcome %in% biomarkers & (mod != "basic" | unem_age != FALSE))) %>%
+  mutate(id = row_number(), .before = 1)
 
 
 # 3. Model Functions ----
@@ -176,32 +176,35 @@ get_predict <- function(boots){
 
 # Bootstraps
 get_result <- function(df, mod_form, family, unem_age){
-    res <- list()
-
+  res <- list()
+  
   # 1. Model
   res$coefs <- get_fast(df, mod_form, family) %>%
     get_coefs()
   
   # 2. Bootstraps
-  res$boots <- map_dfr(1:100, 
-                   ~ df %>%
-                     sample_frac(replace = TRUE) %>%
-                     get_fast(mod_form, family) %>%
-                     get_coefs(),
-                   .id = "boot") %>%
+  res$boots <- map_dfr(1:10, 
+                       ~ df %>%
+                         sample_frac(replace = TRUE) %>%
+                         get_fast(mod_form, family) %>%
+                         get_coefs(),
+                       .id = "boot") %>%
     mutate(boot = as.integer(boot))
   
   # 3. Sample Variance
-  res$rubin <- boots %>%
+  res$rubin <- res$boots %>%
     group_by(term) %>%
     summarise(se = sd(estimate)) %>%
-    full_join(coefs, ., by = "term")
-    
+    full_join(res$coefs, ., by = "term")
+  
   # 4. Margins & Predict
-  if (unem_age){
-    res$margins <- get_margins(boots)
-    res$predict <- get_predict(boots)
-  }  
+  if (unem_age == TRUE){
+    res$margins <- get_margins(res$boots)
+    res$predict <- get_predict(res$boots)
+  }
+  if (family == "binomial"){
+    res$predict <- get_predict(res$boots)
+  }
   
   # 4. Return
   return(res)
@@ -220,6 +223,21 @@ get_pool <- function(boots){
     group_by(Age, Unem_Age) %>%
     summarise(get_ci(estimate),
               .groups = "drop")
+}
+
+get_pdiff <- function(boots){
+  convert_odds <- function(log_odds){
+    odds <- exp(log_odds)
+    p <- odds/(1 + odds)
+  }
+  
+  boots %>%
+    mutate(estimate = convert_odds(estimate)) %>%
+    group_by(Age, boot) %>%
+    mutate(estimate = estimate - lag(estimate)) %>%
+    slice(2) %>%
+    ungroup() %>%
+    get_pool()
 }
 
 # POOL USING RUBIN'S RULES
@@ -255,23 +273,18 @@ get_results <- function(spec_id){
   if (spec$sample == "cc"){
     mod_form <- str_replace(mod_form, "Wave", "1")
     v_imps <- 0
-  } 
+  }
   
-  df_obs <- df %>%
-    rename(Allostatic = Allostatic_Index) %>%
-    select(pidp, x = all_of(spec$outcome)) %>%
-    filter(!is.na(x))
-  
-  get_res <- function(imp){
-    imp_long %>%
-      filter(imputation == !!spec$imputation,
-             imp == !!imp,
+  get_res <- function(imp, var){
+    make_long(var) %>%
+      filter(imp == !!imp,
              Female %in% sexes[[spec$sex]]) %>%
-      semi_join(df_obs, by = "pidp") %>%
+      join_splines() %>%
+      filter(pidp %in% obs_pidp[[var]]) %>%
       get_result(mod_form, spec$family, spec$unem_age)
   }
   
-  res <- map(v_imps, get_res) %>%
+  res <- map(v_imps, get_res, spec$outcome) %>%
     transpose() %>%
     map(bind_rows, .id = "imp")
   
@@ -283,7 +296,7 @@ get_results <- function(spec_id){
   
   if (spec$sample == "cc"){
     res$rubin <- res$rubin %>%
-                uncount(2, .id = "imp")
+      uncount(2, .id = "imp")
   }
   res$rubin <- pool_rubin(res$rubin)
   
@@ -291,6 +304,9 @@ get_results <- function(spec_id){
   if (spec$unem_age){
     res$predict <- get_pool(res$predict)
     res$margins <- get_pool(res$margins)
+  }
+  if (family == "binomial"){
+    res$predict <- get_pdiff(res$predict)
   }
   
   # Observations
@@ -332,7 +348,7 @@ save(main_res, file = "Data/main_results.Rdata")
 
 
 chop_res <- function(res){
-
+  
 }
 
 

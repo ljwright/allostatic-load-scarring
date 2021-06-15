@@ -8,7 +8,7 @@ capture cd "/Volumes/USB DRIVE/"
 global nurse_fld	UKHLS 2-3, Nurse Assessment/stata/stata11
 global main_fld		UKHLS 1-8 & BHPS 1-18, Special Licence/stata/stata13_se
 global act_fld		Projects/UKHLS Work-Life Histories/Data
-global curr_fld 	Projects/Allostatic Load Scarring/Data
+global curr_fld 	Projects/Allostatic Load Scarring Paper/Data
 
 	* Unemployment time range parameters
 global age_low = 16
@@ -51,7 +51,7 @@ replace FatherNSSEC3_14 = 1 if inrange(FatherNSSEC8_14, 4, 5)
 replace FatherNSSEC3_14 = 2 if inrange(FatherNSSEC8_14, 6, 8)
 replace FatherNSSEC3_14 = FatherNSSEC8_14 - 6 if inrange(FatherNSSEC8_14, 9, 11)
 drop FatherNSSEC8_14
-save "${curr_fld}\family_nssec", replace
+save "${curr_fld}/family_nssec", replace
 
 * UKHLS
 tempfile temp
@@ -83,10 +83,10 @@ gen FatherNSSEC3_14 = 0 if FatherNSSEC5_14==0
 replace FatherNSSEC3_14 = 1 if inrange(FatherNSSEC5_14, 1, 2)
 replace FatherNSSEC3_14 = 2 if inrange(FatherNSSEC5_14, 3, 4)
 replace FatherNSSEC3_14 = FatherNSSEC5_14 - 2 if inrange(FatherNSSEC5_14, 5, 7)
-merge 1:1 pidp using "${curr_fld}\family_nssec", nogen update
+merge 1:1 pidp using "${curr_fld}/family_nssec", nogen update
 
 compress
-save "${curr_fld}\family_nssec", replace
+save "${curr_fld}/family_nssec", replace
 
 
 * 2. Collect Main Variables ----
@@ -104,7 +104,7 @@ global bhh		b_fihhmngrs_dv b_tenure_dv
 global chh		c_fihhmngrs_dv c_tenure_dv
 
 tempfile Temp
-use pidp $xwave pa* using "${main_fld}/ukhls_wx\xwavedat_protect", clear
+use pidp $xwave pa* using "${main_fld}/ukhls_wx/xwavedat_protect", clear
 merge 1:1 pidp using "${nurse_fld}/xindresp_ns", ///
 	nogen keepusing($xns)
 preserve
