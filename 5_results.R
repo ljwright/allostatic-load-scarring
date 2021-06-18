@@ -12,30 +12,15 @@ rm(list = ls())
 
 # 1. Load Data ----
 load("Data/df_analysis.Rdata")
-load("Data/imp_long.Rdata")
-
-df <- df %>%
-  mutate(Age = Age_C + 25,
-         Allostatic = Allostatic_Index)
-
-imp_long <- imp_long %>%
-  filter(imputation == "index",
-         imp > 0) %>%
-  semi_join(filter(df, !is.na(Allostatic_Index)), by = "pidp") %>%
-  mutate(Age = Age_C + 25) %>%
-  arrange(imputation, imp, pidp)
+load("Data/imp_ind.Rdata")
 
 pretty_lbls <- c(
   n = "n",
   Unem_Age = "Youth Unemployment",
-  "Unem_Age6+ Months Unemployment:Age_C" = "Youth Unemployment x Age",
-  "Unem_Age6+ Months Unemployment:I(Age_C^2)" = "Youth Unemployment x Age^2",
-  Allostatic = "Allostatic Load (Index)",
+  Allostatic_Index = "Allostatic Load (Index)",
+  Allostatic_Z = "Allostatic Load (Z-Score)",
   Age = "Age",
-  Age_C = "Age",
-  "I(Age_C^2)" = "Age^2",
-  "I(Age_C^3)" = "Age^3",
-  Female = "Gender",
+  Gender = "Gender",
   GHQ_Likert = "GHQ-12 Likert",
   Income = "(Log) Household Income",
   NSSEC5 = "Current NS-SEC",
@@ -46,7 +31,7 @@ pretty_lbls <- c(
   FatherNSSEC5_14 = "Father's NS-SEC",
   ParentEdu = "Parental Education",
   ParentsHH_14 = "Family Composition",
-  NonWhite = "Ethnicity",
+  Ethnicity = "Ethnicity",
   Foreign = "Birth Country",
   Generation = "Immigrant Generation",
   Wave = "Wave",
@@ -59,24 +44,7 @@ pretty_lbls <- c(
   obs = "Observations",
   imps = "Imputations"
   ) %>%
-  enframe(name = "var", value = "var_clean") %>%
-  mutate(cat = map(var, ~ paste0(.x,levels(df[[.x]])))) %>%
-  unnest(cols = cat) %>%
-  mutate(
-    cat_clean = ifelse(var==cat, 
-                       var_clean,
-                       str_replace(cat, var, "")),
-    cat_clean = case_when( var == "NonWhite" & cat_clean == "No" ~ "White",
-                           var == "NonWhite" & cat_clean == "Yes" ~ "Non-White",
-                           var == "Foreign" & cat_clean == "No" ~ "UK-born",
-                           var == "Foreign" & cat_clean == "Yes" ~ "Foreign-born",
-                           var == "Wave" & cat_clean == "2" ~ "Wave 2",
-                           var == "Wave" & cat_clean == "3" ~ "Wave 3",
-                           TRUE ~ cat_clean),
-    index = row_number()) %>%
-  group_by(var) %>%
-  mutate(level = row_number(), levels = n()) %>%
-  ungroup()
+  make_lbls()
 save(pretty_lbls, file = "Data/pretty_lbls.Rdata")
 
 # 2. Sample ----

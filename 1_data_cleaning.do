@@ -92,7 +92,7 @@ save "${curr_fld}/family_nssec", replace
 * 2. Collect Main Variables ----
 	* a. Load Data
 global xwave 	dobm_dv doby_dv ukborn lvag16 agelh lvag14 racel_dv yr2uk4 ///
-				generation maedqf paedqf
+				maedqf paedqf
 global xns		scghq1_dv hiqual_dv jbstat hiqual_dv jbnssec5_dv ///
 				sf1 health marstat wave strata psu
 global bind 	b_hidp b_scghq1_dv b_hhorig b_sampst b_smever b_smnow ///
@@ -165,10 +165,7 @@ replace ParentsHH_14=2 if inrange(lvag14,7,97) | inrange(bm_lvag14_bh,7,8)
 
 merge 1:1 pidp using "${curr_fld}/family_nssec", nogen
 
-gen NonWhite=1-(inrange(racel_dv,1,4)) if !missing(racel_dv)
-gen Generation=0 if generation==4
-replace Generation=generation if inrange(generation,1,3)
-replace Generation=4 if inrange(generation,5,6)
+gen Ethnicity = 1-(inrange(racel_dv,1,4)) if !missing(racel_dv)
 
 gen FatherEdu=0 if inlist(paedqf,1,2)
 replace FatherEdu=paedqf-2 if inrange(paedqf,3,5)
@@ -181,7 +178,6 @@ gen ParentEdu=max(FatherEdu,MotherEdu)
 gen Education=hiqual_dv-1 if inrange(hiqual_dv,1,5)
 replace Education=4 if hiqual_dv==9
 
-// gen GHQ_Likert=scghq1_dv if !missing(scghq1_dv) 
 gen GHQ_Likert = cond(wave == 2, c_scghq1_dv, d_scghq1_dv) if inlist(wave, 2, 3)
 recode GHQ_Likert (min/-1 = .)
 
@@ -198,9 +194,6 @@ replace Tenure=1 if tenure==2
 replace Tenure=2 if inrange(tenure,5,8)
 replace Tenure=3 if inlist(tenure,3,4)
 drop tenure
-
-// gen SF12_MCS=b_sf12mcs_dv if !missing(b_sf12mcs_dv) & wave==2
-// replace SF12_MCS=c_sf12mcs_dv if !missing(c_sf12mcs_dv) & wave==3
 
 gen Status=0 if inlist(jbstat,2,9,10)
 replace Status=1 if jbstat==1
@@ -228,8 +221,9 @@ drop $orig $bhh $chh bm_lvag*
 compress
 
 label define Binary 0 "No" 1 "Yes"
+label define Ethnicity 0 "White" 1 "Non-White"
+label define Foreign 0 "UK-Born" 1 "Foreign-Born"
 label define ParentsHH_14 0 "Two Parents" 1 "Single Parent" 2 "Other"
-label define Generation 0 "4+" 1 "1st" 2 "2nd" 3 "3rd" 4 "Other"
 label define ParentEdu 0 "No Quals" 1 "School/Other" 2 "FE" 3 "HE"
 label define Education 0 "Degree" 1 "Other HE" 2 "FE" 3 "GCSE" 4 "None/Other"
 label define Alcohol_W2 0 "Not in last 12 months" 1 "Every few months" 2 "Every month" ///
@@ -243,9 +237,9 @@ label define ParentNSSEC3 0 "Higher" 1 "Intermediate" 2 "Routine" ///
 label define Smoke_W2 0 "Never Smoker" 1 "Occassional" 2 "Former" 3 "1-10" 4 "> 10"
 label define Tenure 0 "Own" 1 "Mortgage" 2 "Private Rent" 3 "Social Rent"
 
-label values NonWhite Foreign Binary
+label values Ethnicity Ethnicity 
+label values Foreign Foreign
 label values ParentsHH_14* ParentsHH_14
-label values Generation Generation
 label values FatherEdu MotherEdu ParentEdu ParentEdu
 label values Education Education
 label values Alcohol_W2 Alcohol_W2
@@ -304,9 +298,9 @@ gen WtH_Ratio=wstval/htval
 
 gen Nurse_Weight_X=indnsub_xw
 
-gen Female=(nsex==2) if inrange(nsex,1,2)
-label define Female 0 "Male" 1 "Female"
-label values Female Female
+gen Gender = (nsex==2) if inrange(nsex,1,2)
+label define Gender 0 "Male" 1 "Female"
+label values Gender Gender
     
 gen Weight=wtval if wtok==1 & wtval>=0
 gen Age = confage
@@ -316,7 +310,7 @@ label define Wave 2 "Wave 2" 3 "Wave 3"
 label values Wave Wave
 
 global nurse     Pulse Systolic Diastolic WtH_Ratio	
-keep pidp Female Age IntDate_MY Wave Nurse_Weight_X Weight $nurse
+keep pidp Gender Age IntDate_MY Wave Nurse_Weight_X Weight $nurse
 tempfile Temp
 save "`Temp'", replace
     
@@ -325,7 +319,7 @@ save "`Temp'", replace
 use "${nurse_fld}/xlabblood_ns", clear
 recode * (min/-1=.)
 merge 1:1 pidp using "`Temp'", ///
-    keepusing(Weight Female Age)
+    keepusing(Weight Gender Age)
 gen Blood_Weight_X=indbdub_xw
 gen Blood_Sample = inlist(_merge, 1, 3)
 drop _merge
@@ -333,8 +327,8 @@ drop _merge
     *Lowest
 tab1 ecre
 rename igfi Insulin
-gen Creatinine=(140-Age)*Weight*cond(Female==1,1.04,1.23)/ecre ///
-    if inlist(Female,0,1)
+gen Creatinine=(140-Age)*Weight*cond(Gender==1,1.04,1.23)/ecre ///
+    if inlist(Gender,0,1)
 rename dheas DHEAS
  
     * Highest
@@ -351,7 +345,7 @@ global blood    Insulin Creatinine DHEAS ClaussFib ///
                 CReactive HDL_Ratio Trig HbA1c
 keep pidp $blood Blood_Weight_X Blood_Sample
 merge 1:1 pidp using "`Temp'", nogen
-order pidp Blood_Weight_X IntDate_MY Female Age
+order pidp Blood_Weight_X IntDate_MY Gender Age
 compress
 
 preserve
@@ -376,17 +370,20 @@ global biomarkers $nurse $blood
 global lowest	Insulin Creatinine DHEAS
 global highest: list global(biomarkers) - global(lowest)
 
+egen miss_bio = rowmiss(${biomarkers})
+
 di in red "Cut-offs for high risk category, male and female"
 qui foreach var of global biomarkers{
     local ptile=cond(strpos("$lowest", "`var'") > 0, 25, 75)	
     local op=cond(strpos("$lowest", "`var'") > 0, "<=", ">=")
-    local weight=cond(strpos("$blood","`var'")>0,"Blood_Weight_X","Nurse_Weight_X")
+//  local weight=cond(strpos("$blood","`var'")>0,"Blood_Weight_X","Nurse_Weight_X")
+	local weight Blood_Weight_X
 
     gen `var'_Quartile=.
     local risk	`var':
     forval i=0/1{
-        _pctile `var' [pweight=`weight'] if Female==`i', percentiles(`ptile')
-        replace `var'_Quartile=(`var'`op'r(r1)) if !missing(`var') & Female==`i'
+        _pctile `var' [pweight=`weight'] if Gender==`i' & miss_bio == 0, percentiles(`ptile')
+        replace `var'_Quartile=(`var'`op'r(r1)) if !missing(`var') & Gender==`i'
         local xx=round(r(r1),0.001)
         local xx = substr("`xx'",1,strpos("`xx'",".")+3)
         local risk `risk' `xx'
@@ -394,9 +391,7 @@ qui foreach var of global biomarkers{
     di in red "`risk'"
 }
 egen Allostatic_Index = rowtotal(*Quartile)
-egen XX=rowmiss(*Quartile)
-replace Allostatic_Index = . if XX>0
-drop XX
+replace Allostatic_Index = . if miss_bio != 0
     
     * Missing Patterns
 misstable pattern $biomarkers if !missing(Blood_Weight_X), asis
@@ -407,11 +402,12 @@ sum $biomarkers
 foreach var of global biomarkers {
 	replace `var'=ln(`var')
 	
-	local weight=cond(strpos("$blood","`var'")>0, "Blood_Weight_X", "Nurse_Weight_X")
+// 	local weight=cond(strpos("$blood","`var'")>0, "Blood_Weight_X", "Nurse_Weight_X")
+	local weight Blood_Weight_X
 	forval i = 0/1{
-		mean `var' [pweight = `weight'] if Female == `i'
+		mean `var' [pweight = `weight'] if Gender == `i' & miss_bio == 0
 		estat sd
-		replace `var' = (`var' - r(mean)[1,1])/ r(sd)[1,1] if Female == `i'
+		replace `var' = (`var' - r(mean)[1,1])/ r(sd)[1,1] if Gender == `i'
 	}
 	label values `var' 
 }
@@ -419,9 +415,15 @@ foreach var of global lowest{
 	replace `var' = -`var'
 }
 egen Allostatic_Z = rowtotal(${biomarkers})
-egen XX = rowmiss(${biomarkers})
-replace Allostatic_Z = . if XX>0
-drop XX
+replace Allostatic_Z = . if miss_bio != 0
+
+forval i = 0/1{
+	mean Allostatic_Z [pweight = Blood_Weight_X] if Gender == `i'
+	estat sd
+	replace Allostatic_Z = (Allostatic_Z - r(mean)[1,1])/ r(sd)[1,1] if Gender == `i'
+}
+
+drop miss_bio
 
     * Format Dataset
 drop Weight
@@ -440,6 +442,6 @@ drop if Blood_Weight == 0 | missing(Blood_Weight_X)
 
 * Final Formatting
 drop AgetoUK hhorig sampst Birth_MY MotherEdu ///
-	IntDate_MY Nurse_Weight_X Strata Generation FatherNSSEC3_14
+	IntDate_MY Nurse_Weight_X Strata FatherNSSEC3_14
 compress
 save "${curr_fld}/df_analysis", replace
