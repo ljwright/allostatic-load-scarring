@@ -8,12 +8,13 @@ library(tictoc)
 library(furrr)
 library(splines)
 library(fastglm)
+library(estimatr)
 
 rm(list = ls())
 
 # 1. Load Data ----
 load("Data/df_raw.Rdata")
-load("Data/imp_ind.Rdata")
+load("Data/imp.Rdata")
 
 # Age Splines
 make_ns <- function(x, deg_free){
@@ -23,26 +24,23 @@ make_ns <- function(x, deg_free){
     mutate(across(everything(), as.numeric))
 }
 
-age_long <- tibble(Age_C = seq(min(df_raw$Age_C), max(df_raw$Age_C))) %>%
-  mutate(make_ns(Age_C, 3),
-         make_ns(Age_C, 2)) %>%
+age_long <- tibble(Age = seq(min(df_raw$Age), max(df_raw$Age))) %>%
+  mutate(make_ns(Age, 3),
+         make_ns(Age, 2)) %>%
   expand_grid(Unem_Age = unique(df_raw$Unem_Age)) %>%
   drop_na() %>%
   mutate(a2_0 = as.numeric(Unem_Age) - 1,
          a2_1 = a2_0*a2_1,
          a2_2 = a2_0*a2_2) %>%
-  arrange(Age_C, Unem_Age) %>%
-  mutate(Age = Age_C + 25, .after = 1) %>%
-  relocate(Unem_Age, .after = 2)
+  arrange(Age, Unem_Age) %>%
+  relocate(Unem_Age, .after = 1)
 
 age_specs <- age_long %>%
-  select(-Age_C) %>%
   pivot_longer(-c(Age, Unem_Age), names_to = "term")
 
 join_splines <- function(df){
   df %>%
-    left_join(age_long, by = c("Age_C", "Unem_Age")) %>%
-    select(-Age_C)
+    left_join(age_long, by = c("Age", "Unem_Age"))
 }
 
 # 2. Model Arguments ----
@@ -64,7 +62,7 @@ get_func <- function(outcome, mediate, unem_age, controls){
 }
 
 
-covariates <- c("NonWhite", "Foreign", "Education",
+covariates <- c("Ethnicity", "Foreign", "Education",
                 "ParentEdu", "ParentsHH_14", "Wave",
                 "FatherNSSEC5_14")
 behav <- c("Smoke_W2", "Alcohol_W2")
@@ -119,19 +117,24 @@ all_vars <- str_subset(names(df_raw), "Allostatic") %>%
   c(biomarkers) %>%
   set_names(., .)
 
-
 mod_specs <- expand_grid(outcome = c(all_vars, "GHQ_Likert"),
                          mediate = c(FALSE, TRUE),
                          unem_age = c(FALSE, TRUE),
                          mod = names(mod_forms),
                          sex = names(sexes),
                          sample = c("cc", "mi")) %>%
+  uncount(ifelse(outcome == "GHQ_Likert", 2, 1), .id = "n") %>%
   mutate(family = case_when(str_detect(outcome, "Quartile") ~ "binomial",
                             outcome == "Allostatic_Index" ~ "poisson",
-                            TRUE ~ "gaussian")) %>%
+                            TRUE ~ "gaussian"),
+         imp_var = case_when(outcome != "GHQ_Likert" ~ outcome,
+                             n == 1 ~ "Allostatic_Index", 
+                             n == 2 ~ "Allostatic_Z")) %>%
   filter(outcome == "GHQ_Likert" | mediate == FALSE,
-         !(outcome %in% biomarkers & (mod != "basic" | unem_age != FALSE))) %>%
-  mutate(id = row_number(), .before = 1)
+         !(outcome %in% biomarkers & mod != "basic"),
+         !(outcome %in% c(biomarkers, "GHQ_Likert") & unem_age == TRUE)) %>%
+  mutate(id = row_number(), .before = 1) %>%
+  select(-n)
 
 
 # 3. Model Functions ----
@@ -139,15 +142,25 @@ mod_specs <- expand_grid(outcome = c(all_vars, "GHQ_Likert"),
 get_fast <- function(df, mod_form, family){
   mod_form <- mod_form %>% as.formula()
   
-  mod_f <- model.frame(mod_form, data = df, weights = Blood_Weight_X)
-  x <- model.matrix(mod_form, mod_f)
-  y <- model.response(mod_f)
-  if (is.factor(y)){
-    y <- as.numeric(y) - 1
+  if (family == "gaussian"){
+    
+    mod <- lm_robust(mod_form, df, Blood_Weight_X)
+    
+  } else{
+    
+    mod_f <- model.frame(mod_form, data = df, weights = Blood_Weight_X)
+    x <- model.matrix(mod_form, mod_f)
+    y <- model.response(mod_f)
+    if (is.factor(y)){
+      y <- as.numeric(y) - 1
+    }
+    weights <- model.weights(mod_f)
+    
+    mod <- fastglm(x, y, family = family, weights = weights, method = 3)
+    
   }
-  weights <- model.weights(mod_f)
   
-  fastglm(x, y, family = family, weights = weights, method = 3)
+  return(mod)
 }
 
 get_coefs <- function(mod){
@@ -249,6 +262,18 @@ get_pool <- function(boots){
 }
 
 # POOL USING RUBIN'S RULES
+tidy_pool <- function(object, alpha = 0.05){
+  crit <- stats::qt(alpha/2, object$df, lower.tail = FALSE)
+  
+  tibble(term = names(object$qbar),
+         beta = object$qbar, 
+         se = sqrt(diag(object$t)),
+         lci = beta - crit * se,
+         uci = beta + crit * se) %>%
+    select(-se)
+}
+
+
 pool_rubin <- function(rubin){
   rubin %>%
     arrange(imp, term) %>%
@@ -259,45 +284,41 @@ pool_rubin <- function(rubin){
                               se = list(se)))) %>%
     unnest(res) %$%
     pool_mi(beta, se = se) %>%
-    summary() %>%
-    as_tibble(rownames = "term") %>%
-    select(term, beta = 2, lci = 6, uci = 7)
+    tidy_pool()
 }
 
 # Get Results
 get_results <- function(spec_id){
+  print(spec_id)
+  
   spec <- mod_specs %>%
     slice(spec_id) %>%
     as.list()
   
-  v_imps <- 1:imp_ind[[1]]$m
+  v_imps <- 1:imp[[1]]$m
   
   mod_form <- get_func(spec$outcome, spec$mediate, 
                        spec$unem_age, mod_forms[[spec$mod]])
-  if (spec$sex == "all") mod_form <- glue("{mod_form} + Female")
+  if (spec$sex == "all") mod_form <- glue("{mod_form} + Gender")
   if (spec$sample == "cc"){
     mod_form <- str_replace(mod_form, "Wave", "1")
     v_imps <- 0
   }
   
-  get_df <- function(imp, var){
-    dep_var <- var
-    if (var == "GHQ_Likert"){
-      var <- "Allostatic_Index"
-    }
-    make_long(var) %>%
+  get_df <- function(imp, imp_var, dep_var){
+    make_long(imp_var) %>%
       filter(imp == !!imp,
-             Female %in% sexes[[spec$sex]]) %>%
+             Gender %in% sexes[[spec$sex]]) %>%
       join_splines() %>%
       filter(pidp %in% obs_pidp[[!!dep_var]])
   }
   
-  get_res <- function(imp, var){
-    get_df(imp, var) %>%
+  get_res <- function(imp){
+    get_df(imp, spec$imp_var, spec$outcome) %>%
       get_result(mod_form, spec$family, spec$unem_age)
   }
   
-  res <- map(v_imps, get_res, spec$outcome) %>%
+  res <- map(v_imps, get_res) %>%
     transpose() %>%
     map(bind_rows, .id = "imp")
   
@@ -325,19 +346,20 @@ get_results <- function(spec_id){
   }
   
   # Observations
-  res$obs <- get_df(min(v_imps), spec$outcome) %>%
-    get_fast(mod_form, spec$family) %>%
-    pluck("n") %>%
-    length()
+  res$obs <- get_df(min(v_imps), spec$imp_var, spec$outcome) %>%
+    get_fast(mod_form, spec$family)
+  res$obs <- ifelse(spec$family == "gaussian", res$obs$nobs, length(res$obs$n))
   
   # Return Object
   res$boots <- NULL
+  gc()
+  
   return(res)
 }
 
 
 # 4. Run Models ----
-plan(multisession, workers = 8)
+plan(multisession, workers = 2)
 Sys.time()
 tic()
 set.seed(1)
@@ -348,5 +370,12 @@ main_res <- mod_specs %>%
                           .options = furrr_options(seed = TRUE)))
 toc()
 future:::ClusterRegistry("stop")
+
+save(main_res, file = "Data/main_results.Rdata")
+
+Sys.time()
+tic()
+main_res <- map(mod_specs$id, get_results)
+toc()
 
 save(main_res, file = "Data/main_results.Rdata")

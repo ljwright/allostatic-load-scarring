@@ -3,7 +3,6 @@ library(haven)
 library(mice)
 library(glue)
 library(tictoc)
-library(parallel)
 library(furrr)
 library(Hmisc)
 
@@ -50,7 +49,7 @@ obs_pidp <- map(all_vars, ~ get_obs(Allostatic_Z)) %>%
   c(., list(GHQ_Likert = get_obs(GHQ_Likert)))
 
 make_long <- function(var){
-  imp_ind[[var]] %>%
+  imp[[var]] %>%
     complete("long", TRUE) %>%
     as_tibble() %>%
     rename(imp = .imp) %>%
@@ -60,11 +59,11 @@ make_long <- function(var){
 
 # 3. Individual Imputations ----
 tic()
-plan(multisession, workers = 8)
-imp_ind <- sample(all_vars) %>%
+plan(multisession, workers = 4)
+imp <- sample(all_vars) %>%
   future_map(map_mice, .progress = TRUE)
 future:::ClusterRegistry("stop")
 toc()
 
-save(imp_ind, make_long, obs_pidp,
-     file = "Data/imp_ind.Rdata")
+save(imp, make_long, obs_pidp,
+     file = "Data/imp.Rdata")
