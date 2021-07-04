@@ -136,6 +136,8 @@ mod_specs <- expand_grid(outcome = c(all_vars, "GHQ_Likert"),
   mutate(id = row_number(), .before = 1) %>%
   select(-n)
 
+save(all_vars, mod_specs, file = "Data/mod_specs.Rdata")
+
 
 # 3. Model Functions ----
 # Single Model
