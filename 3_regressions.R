@@ -75,6 +75,9 @@ mod_forms <- list(basic = covariates,
 sexes <- list(male = "Male", female = "Female",
               all = c("Male", "Female"))
 
+save(covariates, sexes, get_func, age_long, join_splines,
+     file = "Data/mod_funs.Rdata")
+
 # Weighted Means and Modes
 wtd_mean_or_mode <- function(var, weight){
   if (is.factor(var)){
