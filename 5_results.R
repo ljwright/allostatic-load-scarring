@@ -7,13 +7,13 @@ library(flextable)
 library(magrittr)
 library(haven)
 library(gallimaufr)
+library(lme4)
+library(specr)
 
 rm(list = ls())
 
-## Weights don't seem to be right - check for sca and normal because not sure if it standardizes in survey::glm
 ## CC for GHQ gives large value for allostatic mediation
 ## DECIDE ON FINAL COVARIATES (DROP THOSE NOT IN USE)
-## ADD SAVE PLOTS
 
 # 1. Load Data ----
 load("Data/df_raw.Rdata")
@@ -23,11 +23,17 @@ bio_pretty <- function(var){
   raw_vars <- str_subset(names(df_raw), var)
   clean_name <- pretty_bio[[var]]
   
-  case_when(str_detect(raw_vars, "Quartile") ~ glue("{clean_name} (High-Risk)"),
+  pretty <- case_when(str_detect(raw_vars, "Quartile") ~ glue("{clean_name} (High-Risk)"),
             str_detect(raw_vars, "Index") ~ glue("{clean_name} (Index)"),
             TRUE ~ glue("{clean_name} (Z-Score)")) %>%
     as.character() %>%
     set_names(raw_vars)
+  
+  if (!str_detect(var, "Allostatic")){
+    pretty <- rev(pretty)
+  }
+  
+  return(pretty)
 }
 
 pretty_bio <- c(Allostatic = "Allostatic Load", HbA1c = "HbA1c", Insulin = "Insulin-like Growth Factor 1", 
@@ -200,10 +206,12 @@ lr_test <- function(var, imp_var = "Allostatic_Index"){
   ifelse(p <= 0.05, "*", "")
 }
 
+all_vars <- make_long("Allostatic_Index") %>% names()
+
 lr_tests <- tibble(var = names(df_raw)) %>%
   filter(!(var %in% c("Unem_Age", "pidp", "PSU", "Blood_Weight_X"))) %>%
-  mutate(imp_var = ifelse(var %in% all_vars, var, "Allostatic_Index"),
-         run_var = ifelse(var %in% all_vars, "dep_var", var),
+  mutate(imp_var = ifelse(var %in% all_vars, "Allostatic_Index", var),
+         run_var = ifelse(var %in% all_vars, var, "dep_var"),
          significant = map2_chr(run_var, imp_var, lr_test)) %>%
   select(-imp_var, -run_var)
 
@@ -278,7 +286,7 @@ df_outcome <- mod_specs %>%
                                 str_detect(outcome_clean, "Z-Score") ~ "Z-Score",
                                 str_detect(outcome_clean, "High-Risk") ~ "High-Risk"),
          type_axis = case_when(type_clean == "Index" ~ "IRR",
-                               type_clean == "Z-Score" ~ "Effect Size",
+                               type_clean == "Z-Score" ~ "",
                                type_clean == "High-Risk" ~ "Odds Ratio"),
          outcome_clean = str_replace(outcome_clean, " \\((Index|Z\\-Score|High\\-Risk)\\)", ""),
          outcome_fct = fct_reorder(outcome_clean, index)) %>%
@@ -525,17 +533,30 @@ sca %>%
   pivot_wider(names_from = mod_clean, values_from = p) %>%
   mutate(across(3:4, ~ ifelse(is.na(.x), "0%", .x)))
 
+sca %>% 
+  select(sample, beta, sex, quartile, id, n_vars) %>%
+  mutate(across(sex:n_vars, as.factor)) %>%
+  nest(data = -sample) %>%
+  mutate(res = map(data,
+                   ~ lmer(beta ~ 1 + (1 | sex) + (1 | quartile) + (1 | n_vars), .x) %>%
+                     icc_specs())) %>%
+  unnest(res) %>%
+  select(sample, grp, percent) 
+
 # Figure 6
 fig_6 <- function(quartile, sample, save_p = FALSE){
-  p <- sca %>%
+  sca_res <- sca %>%
     filter(quartile == !!quartile,
-           sample == !!sample) %>%
-    ggplot() + 
-    aes(x = rank, y = beta, color = signif) +
+           sample == !!sample)
+  
+  p <- ggplot(sca_res) + 
+    aes(x = rank, y = beta) +
     facet_wrap(~ sex_clean) +
     geom_hline(yintercept = 0) +
-    geom_point() +
-    scale_color_manual(values = c("red", "black")) +
+    geom_point(aes(color = signif), size = 0.5) +
+    geom_point(data = filter(sca_res, n_vars == 12), 
+               shape = 23, size = 2, alpha = 1, fill = "white") +
+    scale_color_manual(values = c("black", "red")) +
     scale_x_continuous(labels = scales::comma) +
     labs(x = "Rank", y = "Effect Size", color = NULL) +
     theme_minimal() +
@@ -607,7 +628,7 @@ fig_8 <- function(quartile, sample, save_p = FALSE){
     geom_jitter(alpha = 0.4) +
     scale_color_manual(values = c("black", "red")) +
     scale_x_continuous(labels = scales::comma) +
-    labs(x = "Rank", y = NULL, color = NULL) +
+    labs(x = "Rank", y = "Number of Biomarkers", color = NULL) +
     theme_bw() +
     theme(legend.position = "bottom",
           axis.text.x = element_text(angle = 45, hjust = 1),
@@ -670,18 +691,22 @@ sca %>%
 
 # Figure 10
 fig_10 <- function(sample, save_p = FALSE){
-  p <- sca %>%
-    filter(sample == !!sample) %>%
-    ggplot() + 
-    aes(x = rank, y = beta, color = mod_clean) +
+  sca_res <- sca %>%
+    filter(sample == !!sample)
+  
+  p <- ggplot(sca_res) + 
+    aes(x = rank, y = beta) +
     facet_wrap(~ sex_clean) +
     geom_hline(yintercept = 0) +
-    geom_point() +
+    geom_point(aes(color = mod_clean), size = 0.5) +
+    geom_point(data = filter(sca_res, n_vars == 12), 
+               shape = 23, size = 2, alpha = 1, fill = "white") +
     scale_color_brewer(palette = "Dark2") +
     scale_x_continuous(labels = scales::comma) +
     labs(x = "Rank", y = "Effect Size", color = NULL) +
     theme_minimal() +
-    theme(legend.position = c(.1, .85))
+    theme(legend.position = c(.1, .85)) +
+    guides(color = guide_legend(override.aes = list(size = 1)))
   
   if (save_p == TRUE){
     glue("fig10_{sample}") %>%
